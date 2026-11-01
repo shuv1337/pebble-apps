@@ -142,6 +142,39 @@ test('Codex signs in with the ChatGPT web session, like the Dot', async () => {
   await assert.rejects(() => f.configure({ type: 'codex_connect', session_token: 'bad;cookie' }), /invalid session/);
 });
 
+test('device sign-in: pending until approved in the browser, then signs in and renews with its refresh token', async () => {
+  let approved = false;
+  let refreshed = 0;
+  const f = fixture({ routes: {
+    'POST https://auth.openai.com/api/accounts/deviceauth/usercode': () => json(200, { device_auth_id: 'dev-1', user_code: 'ABCD-1234', interval: '5' }),
+    'POST https://auth.openai.com/api/accounts/deviceauth/token': () =>
+      approved ? json(200, { authorization_code: 'auth-code', code_verifier: 'verifier-1', code_challenge: 'c' }) : json(403, { error: { code: 'deviceauth_authorization_pending' } }),
+    'POST https://auth.openai.com/oauth/token': (init) => {
+      const body = new URLSearchParams(init.body);
+      if (body.get('grant_type') === 'refresh_token') {
+        refreshed++;
+        assert.equal(body.get('refresh_token'), 'refresh-1');
+        return json(200, { access_token: accessToken(f.clock.now / 1000 + 3600), refresh_token: 'refresh-2' });
+      }
+      assert.equal(body.get('code'), 'auth-code');
+      assert.equal(body.get('code_verifier'), 'verifier-1');
+      assert.equal(body.get('redirect_uri'), 'https://auth.openai.com/deviceauth/callback');
+      return json(200, { access_token: accessToken(NOW / 1000 + 600), refresh_token: 'refresh-1' });
+    },
+  } });
+  const begun = await f.configure({ type: 'device_begin' });
+  assert.deepEqual({ ...begun }, { code: 'ABCD-1234', url: 'https://auth.openai.com/codex/device' });
+  assert.deepEqual({ ...(await f.configure({ type: 'device_poll' })) }, { pending: true });
+  approved = true;
+  const status = await f.configure({ type: 'device_poll' });
+  assert.equal(status.codex.signedIn, true);
+  assert.equal(JSON.parse(f.storage.get('chatgpt.codex.session.v1')).refreshToken, 'refresh-1');
+  f.clock.now = NOW + 10 * 60 * 1000;
+  await f.agentChats();
+  assert.equal(refreshed, 1);
+  assert.equal(JSON.parse(f.storage.get('chatgpt.codex.session.v1')).refreshToken, 'refresh-2');
+});
+
 test('connecting computers takes its PKCE and device key from the settings page entropy', async () => {
   const f = fixture();
   await f.signIn();
