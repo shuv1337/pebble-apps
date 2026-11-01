@@ -18,7 +18,6 @@
         "name": "Internet",
         "parameters": {
           "domains": [
-            "cursor.com",
             "cursor.sh",
             "cursorvm.com"
           ]

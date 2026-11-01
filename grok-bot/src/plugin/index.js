@@ -8,7 +8,6 @@ var KEY = "grokbot.connection.v1";
 var BOTS_KEY = "grokbot.bots.v1";
 var BOTS_TTL_MS = 5 * 60 * 1000;
 var POLL_URL = "https://api2.cursor.sh/auth/poll";
-var CONFIRM_URL = "https://cursor.com/api/auth/loginDeepCallbackControl";
 var ENSURE_URL = "https://api2.cursor.sh/aiserver.v1.GrokBotService/EnsureSandBox";
 var BOX_URL = /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.cursorvm\.com$/i;
 var MAX_MESSAGE = 16000;
@@ -18,7 +17,7 @@ var SEND_BUDGET_MS = 18000;
 var READ_BUDGET_MS = 18000;
 // Below this much time left, a send is refused rather than risk an unknown delivery.
 var SEND_MIN_LEFT_MS = 8000;
-var HOSTS = ["cursor.com", "cursor.sh", "cursorvm.com"];
+var HOSTS = ["cursor.sh", "cursorvm.com"];
 // Apps without Pebble.permissions fail a request to a domain the user hasn't allowed the same way
 // as a dead network, so there a failed request is all we know.
 var PROBES = [["cursor.sh", "https://cursor.sh/"]];
@@ -396,23 +395,6 @@ function createService(storage, fetch, cache) {
     return body && typeof body.accessToken === "string" ? body.accessToken : null;
   }
 
-  /**
-   * The app's sign-in view closes as soon as Cursor sets its session cookie, before the user reaches
-   * loginDeepControl's "Yes, log in" step, so confirm the login with that cookie the way that page does.
-   */
-  async function confirmSignIn(uuid, challenge, session) {
-    if (!/^[A-Za-z0-9_-]{43}$/.test(String(challenge)) || typeof session !== "string" || !session ||
-        session.length > 8192 || /[\r\n;]/.test(session))
-      throw new PluginError("INVALID_ARGS", "Grok Bot sign-in was not started correctly. Please try again.");
-    var response = await fetch(CONFIRM_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie: "WorkosCursorSessionToken=" + session },
-      body: JSON.stringify({ uuid: uuid, challenge: challenge }),
-    });
-    if (response.status < 200 || response.status >= 300)
-      throw new PluginError("AUTH_REQUIRED", "Cursor didn't accept the Grok Bot sign-in (" + response.status + "). Please try again.");
-  }
-
   async function config(message) {
     var deadline = Date.now() + READ_BUDGET_MS;
     switch (message && message.type) {
@@ -421,11 +403,6 @@ function createService(storage, fetch, cache) {
       case "connect":
         return connectWith(message.accessToken);
       case "finishSignIn": {
-        if (message.session) {
-          var early = await pollSignIn(message.uuid, message.verifier);
-          if (early) return connectWith(early);
-          await confirmSignIn(message.uuid, message.challenge, message.session);
-        }
         var token = await pollSignIn(message.uuid, message.verifier);
         return token ? connectWith(token) : { pending: true };
       }
