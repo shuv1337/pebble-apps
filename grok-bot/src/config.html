@@ -208,17 +208,25 @@ document.addEventListener('click', function (event) {
       }
       $("signin").onclick = $("signinAgain").onclick = () =>
         run(async () => {
-          if (!Pebble.webSignIn) throw new Error("Grok Bot sign-in requires a newer version of the Pebble app.");
           say("Opening Grok Bot sign-in…");
           const login = await cursorLogin();
-          const cookies = await Pebble.webSignIn({ url: login.url, cookies: ["WorkosCursorSessionToken"], domain: "cursor.com" });
-          if (!cookies) { say("Sign-in cancelled."); return; }
-          say("Connecting to your Grok Bot computer…");
-          const deadline = Date.now() + 15000;
+          // In the browser, Cursor's own page (and an existing Cursor session) carries the login
+          // through its "Yes, log in" step; the in-app sign-in view closes before that step.
+          const browser = typeof Pebble.openUrl === "function";
+          if (browser) {
+            await Pebble.openUrl(login.url);
+            say("Sign in and confirm in your browser, then come back here.");
+          } else {
+            if (!Pebble.webSignIn) throw new Error("Grok Bot sign-in requires a newer version of the Pebble app.");
+            const cookies = await Pebble.webSignIn({ url: login.url, cookies: ["WorkosCursorSessionToken"], domain: "cursor.com" });
+            if (!cookies) { say("Sign-in cancelled."); return; }
+            say("Connecting to your Grok Bot computer…");
+          }
+          const deadline = Date.now() + (browser ? 180000 : 15000);
           let result;
           while ((result = await send({ type: "finishSignIn", uuid: login.uuid, verifier: login.verifier })).pending) {
             if (Date.now() > deadline) throw new Error("Grok Bot sign-in did not finish. Please try again.");
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await new Promise((resolve) => setTimeout(resolve, browser ? 2000 : 1000));
           }
           render(result);
           say(bots.length ? describe() : "Connected, but you have no bots yet. Create one in Grok Bot.");

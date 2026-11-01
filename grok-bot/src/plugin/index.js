@@ -207,7 +207,9 @@ function createService(storage, fetch, cache) {
       throw e;
     }
     if (!response.ok) {
-      console.error("Grok Bot POST " + path + " failed: HTTP " + response.status);
+      console.error("Grok Bot POST " + path + " failed: HTTP " + response.status + " " + String(text).slice(0, 300));
+      if (/no longer supported/i.test(String(text)))
+        throw new PluginError("PLUGIN_UNAVAILABLE", "Cursor stopped accepting this version of the Grok Bot plugin. Update the plugin to continue.");
       throw new PluginError("HTTP", "HTTP " + response.status, response.status);
     }
     try {
@@ -225,7 +227,7 @@ function createService(storage, fetch, cache) {
       "connect-protocol-version": "1",
       authorization: "Bearer " + accessToken,
       "x-cursor-client-type": "sand",
-      "x-cursor-client-version": "0.20.0",
+      "x-cursor-client-version": "1.1.0",
       "x-sand-box-namespace": "prod",
     }, {}, deadline);
     var url = String(body.gatewayUrl || body.gateway_url || "").replace(/\/$/, "");
