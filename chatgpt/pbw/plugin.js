@@ -1202,6 +1202,9 @@
       var DOT_KEY = "chatgpt-dots.connection.v1";
       var PENDING_KEY = "chatgpt.codex.pending.v1";
       var PENDING_TTL_MS = 30 * 60 * 1e3;
+      var DEVICE_KEY = "chatgpt.codex.device.v1";
+      var DEVICE_TTL_MS = 15 * 60 * 1e3;
+      var USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
       var RENEW_BEFORE_MS = 5 * 60 * 1e3;
       var VERIFIER_BYTES = 32;
       var STATE_BYTES = 16;
@@ -1260,6 +1263,73 @@
           signedIn.sessionToken = session.sessionToken;
           return signedIn;
         }
+        async function tokenRequest(fields) {
+          var response = await fetch2(ISSUER + "/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT },
+            body: util.form(fields)
+          });
+          if (response.status < 200 || response.status >= 300) throw authRequired();
+          var tokens = await response.json();
+          if (!tokens || !validToken(tokens.access_token)) throw authRequired();
+          return tokens;
+        }
+        function fromTokens(tokens, previousRefresh) {
+          var signedIn = accountOf(tokens.access_token);
+          var refreshToken = validToken(tokens.refresh_token) ? tokens.refresh_token : previousRefresh;
+          if (!signedIn || !validToken(refreshToken) || signedIn.expiresAt - now() < 60 * 1e3) throw authRequired();
+          signedIn.accessToken = tokens.access_token;
+          signedIn.refreshToken = refreshToken;
+          return signedIn;
+        }
+        async function refresh(refreshToken) {
+          return fromTokens(await tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLIENT_ID }), refreshToken);
+        }
+        async function beginDevice() {
+          var response = await fetch2(ISSUER + "/api/accounts/deviceauth/usercode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+            body: JSON.stringify({ client_id: CLIENT_ID })
+          });
+          if (response.status !== 200) {
+            throw PluginError("PLUGIN_UNAVAILABLE", "OpenAI did not start a sign-in (HTTP " + response.status + "). Try again shortly.");
+          }
+          var body = await response.json();
+          if (!body || !validToken(body.device_auth_id) || !validToken(body.user_code)) {
+            throw PluginError("PLUGIN_UNAVAILABLE", "OpenAI sent an unreadable sign-in. Try again shortly.");
+          }
+          await storage.setItem(DEVICE_KEY, JSON.stringify({ id: body.device_auth_id, code: body.user_code, at: now() }));
+          return { code: body.user_code, url: ISSUER + "/codex/device" };
+        }
+        async function pollDevice() {
+          var raw = await storage.getItem(DEVICE_KEY);
+          var pending = raw ? JSON.parse(raw) : null;
+          if (!pending || now() - pending.at > DEVICE_TTL_MS) {
+            throw PluginError("AUTH_REQUIRED", "That sign-in took too long. Start signing in again.");
+          }
+          var response = await fetch2(ISSUER + "/api/accounts/deviceauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+            body: JSON.stringify({ device_auth_id: pending.id, user_code: pending.code })
+          });
+          if (response.status === 403 || response.status === 404) return null;
+          if (response.status !== 200) throw authRequired();
+          var grant = await response.json();
+          if (!grant || !validToken(grant.authorization_code) || !validToken(grant.code_verifier)) throw authRequired();
+          var tokens = await tokenRequest({
+            grant_type: "authorization_code",
+            code: grant.authorization_code,
+            redirect_uri: ISSUER + "/deviceauth/callback",
+            client_id: CLIENT_ID,
+            code_verifier: grant.code_verifier
+          });
+          await storage.removeItem(DEVICE_KEY);
+          return fromTokens(tokens);
+        }
+        async function adopt(state) {
+          await storage.setItem(AUTH_KEY, JSON.stringify(state));
+          return state;
+        }
         async function connect(sessionToken) {
           if (!validToken(sessionToken)) {
             throw PluginError("AUTH_REQUIRED", "ChatGPT sign-in returned an invalid session. Please try again.");
@@ -1279,7 +1349,7 @@
             renewing = (async function() {
               var state = await load();
               if (!state) throw signInFirst();
-              var renewed = await exchange(state.sessionToken);
+              var renewed = state.refreshToken ? await refresh(state.refreshToken) : await exchange(state.sessionToken);
               if (renewed.account !== state.account || renewed.user !== state.user) throw authRequired();
               await storage.setItem(AUTH_KEY, JSON.stringify(renewed));
               return renewed;
@@ -1351,8 +1421,12 @@
         async function signOut() {
           await storage.removeItem(AUTH_KEY);
           await storage.removeItem(PENDING_KEY);
+          await storage.removeItem(DEVICE_KEY);
         }
         return {
+          beginDevice,
+          pollDevice,
+          adopt,
           load,
           connect,
           current,
@@ -6664,8 +6738,13 @@
           };
         }
         async function connect(sessionToken) {
+          return signIn(function() {
+            return auth.connect(sessionToken);
+          });
+        }
+        async function signIn(signInWith) {
           var before = await auth.load();
-          var after = await auth.connect(sessionToken);
+          var after = await signInWith();
           if (!before || before.account !== after.account || before.user !== after.user) {
             await remote.disconnect();
             await dots.disconnect();
@@ -6687,6 +6766,14 @@
             case "dots_connect":
             case "codex_connect":
               return connect(message.session_token);
+            case "device_begin":
+              return auth.beginDevice();
+            case "device_poll": {
+              var ready = await auth.pollDevice();
+              return ready ? signIn(function() {
+                return auth.adopt(ready);
+              }) : { pending: true };
+            }
             case "codex_enroll_begin":
               return auth.beginEnroll(message.entropy);
             case "codex_enroll_finish": {

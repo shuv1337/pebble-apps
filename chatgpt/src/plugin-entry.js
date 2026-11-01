@@ -79,8 +79,12 @@ function createPlugin(storage, fetch, now, WebSocketImpl) {
    * signs in, and [dotError] says why. Another account drops the old one's Dot, computers and chats.
    */
   async function connect(sessionToken) {
+    return signIn(function () { return auth.connect(sessionToken); });
+  }
+
+  async function signIn(signInWith) {
     var before = await auth.load();
-    var after = await auth.connect(sessionToken);
+    var after = await signInWith();
     if (!before || before.account !== after.account || before.user !== after.user) {
       await remote.disconnect();
       await dots.disconnect();
@@ -103,6 +107,12 @@ function createPlugin(storage, fetch, now, WebSocketImpl) {
       case 'dots_connect':
       case 'codex_connect':
         return connect(message.session_token);
+      case 'device_begin':
+        return auth.beginDevice();
+      case 'device_poll': {
+        var ready = await auth.pollDevice();
+        return ready ? signIn(function () { return auth.adopt(ready); }) : { pending: true };
+      }
       case 'codex_enroll_begin':
         return auth.beginEnroll(message.entropy);
       case 'codex_enroll_finish': {

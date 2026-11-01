@@ -52,7 +52,13 @@ details { margin:20px 0; } summary { cursor:pointer; color:var(--muted); min-hei
 <div class="card">
 <div class="eyebrow">ChatGPT account</div>
 <section id="codexOut" hidden>
-<button id="signin" class="primary">Sign in with ChatGPT</button>
+<button id="signinSafari" class="primary">Sign in with Safari (passkey)</button>
+<div id="device" hidden>
+<p>In Safari, enter this code, then approve:</p>
+<p id="deviceCode" style="font-size:28px;font-weight:700;letter-spacing:2px;margin:6px 0"></p>
+<p class="hint">Come back here when you're done; this page finishes signing in.</p>
+</div>
+<button id="signin" class="quiet">Sign in inside the app</button>
 <p class="hint">One sign-in reaches your Dot, your ChatGPT chats and Codex Cloud. It gives the plugin access to your ChatGPT account; it is used only to list your chats and send them your messages.</p>
 </section>
 <section id="codexIn" hidden>
@@ -262,6 +268,25 @@ $("saveNickname").onclick = () => run(async () => {
   });
   await render(await send({ type: "status" }));
   say(name ? "Saved. Say “" + name + "” to send to this chat." : "Nickname removed.");
+});
+$("signinSafari").onclick = () => run(async () => {
+  if (typeof Pebble.openUrl !== "function") throw new Error("Signing in with Safari requires a newer version of the Pebble app.");
+  const begun = await send({ type: "device_begin" });
+  $("deviceCode").textContent = begun.code;
+  $("device").hidden = false;
+  try { await navigator.clipboard.writeText(begun.code); } catch (e) {}
+  await Pebble.openUrl(begun.url);
+  say("Enter the code in Safari and approve, then come back here.");
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let next;
+  while ((next = await send({ type: "device_poll" })).pending) {
+    if (Date.now() > deadline) throw new Error("That sign-in took too long. Start signing in again.");
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  $("device").hidden = true;
+  await render(next);
+  await refresh();
+  say((next.dotError ? next.dotError + " " : "") + describe());
 });
 $("signin").onclick = () => run(async () => {
   const sessionToken = await chatgptCookie();
