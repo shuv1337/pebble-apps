@@ -163,6 +163,37 @@ test("finishSignIn polls once: pending until Cursor hands over the token, then c
   );
 });
 
+test("finishSignIn with the session cookie confirms the login, then polls for the token", async () => {
+  const grok = fakeGrokBot();
+  const calls = [];
+  let confirmed = false;
+  const fetch = async (url, init) => {
+    if (url.startsWith("https://cursor.com/api/auth/loginDeepCallbackControl")) {
+      calls.push({ url, init });
+      confirmed = true;
+      return { status: 200, json: async () => ({}) };
+    }
+    if (!url.startsWith("https://api2.cursor.sh/auth/poll")) return grok.fetch(url, init);
+    return confirmed
+      ? { status: 200, json: async () => ({ accessToken: "cursor-token" }) }
+      : { status: 404, json: async () => ({}) };
+  };
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  const verifier = "v".repeat(43);
+  const challenge = "c".repeat(43);
+  const settings = await createService(memoryStorage(), fetch)
+    .config({ type: "finishSignIn", uuid, verifier, challenge, session: "user_1%3A%3Ajwt" });
+  assert.equal(settings.configured, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.cookie, "WorkosCursorSessionToken=user_1%3A%3Ajwt");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { uuid, challenge });
+  confirmed = false;
+  await assert.rejects(
+    createService(memoryStorage(), fetch).config({ type: "finishSignIn", uuid, verifier, challenge: "x", session: "s" }),
+    /not started correctly/,
+  );
+});
+
 test("agent/configured is false until signed in with a bot selected", async () => {
   const storage = memoryStorage();
   const grok = fakeGrokBot();

@@ -202,9 +202,10 @@ document.addEventListener('click', function (event) {
         const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
         const digest = sha256(new TextEncoder().encode(verifier));
         const uuid = randomUuid();
-        const url = "https://cursor.com/loginDeepControl?challenge=" + base64Url(digest) +
+        const challenge = base64Url(digest);
+        const url = "https://cursor.com/loginDeepControl?challenge=" + challenge +
           "&uuid=" + uuid + "&mode=login&redirectTarget=sand";
-        return { url, uuid, verifier };
+        return { url, uuid, verifier, challenge };
       }
       $("signin").onclick = $("signinAgain").onclick = () =>
         run(async () => {
@@ -215,10 +216,12 @@ document.addEventListener('click', function (event) {
           if (!cookies) { say("Sign-in cancelled."); return; }
           say("Connecting to your Grok Bot computer…");
           const deadline = Date.now() + 15000;
-          let result;
-          while ((result = await send({ type: "finishSignIn", uuid: login.uuid, verifier: login.verifier })).pending) {
+          let result = await send({ type: "finishSignIn", uuid: login.uuid, verifier: login.verifier,
+            challenge: login.challenge, session: cookies.WorkosCursorSessionToken });
+          while (result.pending) {
             if (Date.now() > deadline) throw new Error("Grok Bot sign-in did not finish. Please try again.");
             await new Promise((resolve) => setTimeout(resolve, 1000));
+            result = await send({ type: "finishSignIn", uuid: login.uuid, verifier: login.verifier });
           }
           render(result);
           say(bots.length ? describe() : "Connected, but you have no bots yet. Create one in Grok Bot.");
