@@ -12,7 +12,7 @@ var ENSURE_URL = "https://api2.cursor.sh/aiserver.v1.GrokBotService/EnsureSandBo
 var BOX_URL = /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.cursorvm\.com$/i;
 var MAX_MESSAGE = 16000;
 var MAX_NICKNAME = 40;
-// Whole-request budgets, under the host's limits (120s per send action, 60s per read).
+// Whole-request budgets, under the host's 20-second plugin request limit.
 var SEND_BUDGET_MS = 18000;
 var READ_BUDGET_MS = 18000;
 // Below this much time left, a send is refused rather than risk an unknown delivery.
@@ -475,7 +475,10 @@ function createService(storage, fetch, cache) {
       throw new PluginError("INVALID_ARGS", "Provide a message between 1 and 16,000 characters.");
     var state = required();
     var call = await box(state.accessToken, deadline);
-    var bot = await targetBot(call, state, args.chat_id);
+    // The saved default is an exact ID; resolving it through listAgents wastes the send budget.
+    var bot = (!args.chat_id || (typeof args.chat_id === "string" && !args.chat_id.trim())) && state.botId
+      ? { id: state.botId, name: state.botName || "Grok Bot" }
+      : await targetBot(call, state, args.chat_id);
     if (deadline - Date.now() < SEND_MIN_LEFT_MS)
       throw new PluginError("PLUGIN_UNAVAILABLE", "Grok Bot is responding slowly, so the message was not sent. Try again shortly.");
     var clientNonce = nonce();

@@ -564,3 +564,24 @@ test("reach: a request refused as not allowed names its declared domain for sure
   assert.equal(withBlockedHost(err, safeError(err), memoryStorage(), () => new Promise(() => {})).message,
     sure("cursorvm.com") + " Grok Bot delivery is uncertain. Check Grok Bot before sending again.");
 });
+
+test("sends to the saved default after an eight-second lookup without refreshing the bot list", async () => {
+  const realNow = Date.now;
+  let skew = 0, lookups = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const grok = fakeGrokBot({ onEnsure: () => { if (lookups++ > 0) skew += 8000; } });
+    const originalFetch = grok.fetch;
+    grok.fetch = async (url, init) => {
+      if (lookups > 1 && url.endsWith("/api/listAgents")) skew += 3500;
+      return originalFetch(url, init);
+    };
+    const service = await connected(grok);
+    grok.calls.length = 0;
+    const result = await service.action({ action: "send_to_agent", args: { message: "hello" } });
+    assert.match(result.text, /Message sent/);
+    assert.equal(grok.calls.filter(c => c.url.endsWith("/api/listAgents")).length, 0);
+    assert.equal(grok.calls.filter(c => c.url.endsWith("/api/sendPrompt")).length, 1);
+    assert.equal(grok.calls.find(c => c.url.endsWith("/api/sendPrompt")).body.agentId, "a1");
+  } finally { Date.now = realNow; }
+});
