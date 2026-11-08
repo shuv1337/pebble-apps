@@ -392,29 +392,57 @@ function createService(storage, fetch, cache) {
       throw new PluginError("INVALID_ARGS", "Grok Bot sign-in was not started correctly. Please try again.");
     var url = POLL_URL + "?uuid=" + encodeURIComponent(uuid) + "&verifier=" + encodeURIComponent(verifier);
     var response = await fetch(url, { method: "GET" });
-    if (response.status !== 200) return null;
+    // 404 is Cursor's "not approved yet"; anything else is worth seeing in the log.
+    if (response.status !== 200) {
+      if (response.status !== 404) console.error("Grok Bot sign-in poll failed: HTTP " + response.status);
+      return null;
+    }
     var body = await response.json();
     return body && typeof body.accessToken === "string" ? body.accessToken : null;
+  }
+
+  // iOS aborts in-flight requests as the app moves to and from the background, which happens during
+  // this flow, and Cursor may not hand a token over twice. So a network failure counts as "not yet",
+  // and the token is held in memory until connecting succeeds or Cursor rejects it.
+  var heldSignIn = null;
+  async function finishSignIn(uuid, verifier) {
+    try {
+      var token = heldSignIn && heldSignIn.uuid === uuid ? heldSignIn.token : await pollSignIn(uuid, verifier);
+      if (!token) return { pending: true };
+      heldSignIn = { uuid: uuid, token: token };
+      var connected = await connectWith(token);
+      heldSignIn = null;
+      return connected;
+    } catch (e) {
+      if (!(e instanceof PluginError)) {
+        console.error("Grok Bot sign-in will retry after a network failure: " + ((e && e.name) || "Error"));
+        return { pending: true };
+      }
+      heldSignIn = null;
+      throw e;
+    }
   }
 
   async function config(message) {
     var deadline = Date.now() + READ_BUDGET_MS;
     switch (message && message.type) {
-      case "status":
-        return settings(load());
+      case "status": {
+        var saved = load();
+        var cached = saved && cachedBots(saved);
+        return settings(saved, cached ? cached.bots : undefined);
+      }
       case "connect":
         return connectWith(message.accessToken);
-      case "finishSignIn": {
-        var token = await pollSignIn(message.uuid, message.verifier);
-        return token ? connectWith(token) : { pending: true };
-      }
+      case "finishSignIn":
+        return finishSignIn(message.uuid, message.verifier);
       case "listBots": {
         var current = required();
         return settings(current, await bots(await box(current.accessToken, deadline), current));
       }
       case "selectBot": {
         var s = required();
-        var all = await bots(await box(s.accessToken, deadline), s);
+        var savedList = cachedBots(s);
+        var all = savedList ? savedList.bots : await bots(await box(s.accessToken, deadline), s);
         var chosen = all.find(function (b) { return b.id === message.id; });
         if (!chosen)
           throw new PluginError("INVALID_ARGS", "That bot is no longer available. Refresh the list and choose a bot.");
@@ -425,7 +453,8 @@ function createService(storage, fetch, cache) {
       }
       case "saveNickname": {
         var n = required();
-        var listed = await bots(await box(n.accessToken, deadline), n);
+        var savedNames = cachedBots(n);
+        var listed = savedNames ? savedNames.bots : await bots(await box(n.accessToken, deadline), n);
         setNickname(n, listed, message.id, message.nickname);
         save(n);
         return settings(n, listed);

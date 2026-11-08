@@ -163,6 +163,41 @@ test("finishSignIn polls once: pending until Cursor hands over the token, then c
   );
 });
 
+test("finishSignIn survives network failures without losing the token Cursor handed over once", async () => {
+  const grok = fakeGrokBot();
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  const verifier = "v".repeat(43);
+  const aborted = () => Object.assign(new Error("fetch failed"), { name: "TypeError" });
+  let polls = 0;
+  let failPoll = true;
+  let failEnsure = 2;
+  const fetch = async (url, init) => {
+    if (url.startsWith("https://api2.cursor.sh/auth/poll")) {
+      if (failPoll) { failPoll = false; throw aborted(); }
+      return ++polls === 1
+        ? { status: 200, json: async () => ({ accessToken: "cursor-token" }) }
+        : { status: 404, json: async () => ({}) };
+    }
+    if (url.endsWith("/EnsureSandBox") && failEnsure-- > 0) throw aborted();
+    return grok.fetch(url, init);
+  };
+  const service = createService(memoryStorage(), fetch);
+  const finish = () => service.config({ type: "finishSignIn", uuid, verifier });
+  assert.deepEqual(await finish(), { pending: true }); // the poll itself failed
+  assert.deepEqual(await finish(), { pending: true }); // token received, connecting failed
+  assert.deepEqual(await finish(), { pending: true }); // connecting failed again
+  assert.equal((await finish()).configured, true);
+  assert.equal(polls, 1);
+});
+
+test("finishSignIn stops when Cursor rejects the token", async () => {
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  const fetch = async (url) => url.startsWith("https://api2.cursor.sh/auth/poll")
+    ? { status: 200, json: async () => ({ accessToken: "rejected-token" }) }
+    : { ok: false, status: 401, text: async () => "{}" };
+  await assert.rejects(createService(memoryStorage(), fetch).config({ type: "finishSignIn", uuid, verifier: "v".repeat(43) }), (e) => safeError(e).code === "AUTH_REQUIRED");
+});
+
 test("agent/configured is false until signed in with a bot selected", async () => {
   const storage = memoryStorage();
   const grok = fakeGrokBot();

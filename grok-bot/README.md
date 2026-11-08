@@ -41,7 +41,7 @@ This uses no desktop app and no bridge. It is the same private API the Grok Bot 
 1. **Sign-in** is the Grok Bot app's own login:
    - The settings page opens `cursor.com/loginDeepControl?challenge=…&uuid=…&mode=login&redirectTarget=sand`
      through `Pebble.webSignIn`, which returns once Cursor's `WorkosCursorSessionToken` cookie exists.
-   - The plugin then polls `api2.cursor.sh/auth/poll` until it returns a Cursor access token,
+   - The plugin then polls `api2.cursor.sh/auth/poll` until it returns a Cursor access token (up to 15 minutes; network failures just retry),
      and keeps it in `Pebble.secureStorage`.
    - Grok Bot accounts are Cursor accounts. The token lasts about 60 days and cannot be
      refreshed, so when it expires the user signs in again.

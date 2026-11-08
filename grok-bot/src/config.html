@@ -72,7 +72,17 @@ document.addEventListener('click', function (event) {
       let state = { configured: false }, bots = [], loaded = false, busy = false;
       const say = (text) => { $("status").textContent = text; };
       async function send(message) {
-        const result = await Pebble.sendMessage("plugin", message);
+        let timer;
+        let result;
+        try {
+          const request = Pebble.sendMessage("plugin", message);
+          result = message.type !== "listBots" ? await request : await Promise.race([
+            request,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Grok Bot took too long to respond. Try Refresh again.")), 20000);
+            }),
+          ]);
+        } finally { clearTimeout(timer); }
         if (result.error) throw new Error(result.error);
         return result;
       }
@@ -117,7 +127,7 @@ document.addEventListener('click', function (event) {
         if (!bots.length) return "Your Grok Bot computer has no bots yet. Create one in Grok Bot.";
         const groups = bots.filter((b) => b.group).length, single = bots.length - groups;
         const count = (n, word) => n + " " + word + (n === 1 ? "" : "s");
-        return "Your Grok Bot computer is reachable: " + count(single, "bot") + (groups ? " and " + count(groups, "group") : "") + ".";
+        return "Saved list: " + count(single, "bot") + (groups ? " and " + count(groups, "group") : "") + ".";
       }
       function render(next) {
         const wasConfigured = state.configured;
@@ -222,7 +232,9 @@ document.addEventListener('click', function (event) {
             if (!cookies) { say("Sign-in cancelled."); return; }
             say("Connecting to your Grok Bot computer…");
           }
-          const deadline = Date.now() + (browser ? 180000 : 15000);
+          // Long enough for a passkey or emailed code; the page is frozen while Safari is in front, and
+          // giving up discards this login, so a late approval could never be collected.
+          const deadline = Date.now() + (browser ? 900000 : 15000);
           let result;
           while ((result = await send({ type: "finishSignIn", uuid: login.uuid, verifier: login.verifier })).pending) {
             if (Date.now() > deadline) throw new Error("Grok Bot sign-in did not finish. Please try again.");
@@ -263,7 +275,8 @@ document.addEventListener('click', function (event) {
         Pebble.sendMessage("plugin", { type: "reach" }).then((r) => { if (r && r.blocked) showBlocked(r.blocked); }).catch(() => {});
         run(async () => {
           render(await send({ type: "status" }));
-          if (state.configured) await load();
+          if (state.configured && !loaded) await load();
+          else if (state.configured) say("Showing saved bots. Refresh to check for new bots.");
           else say("Sign in to connect your Grok Bot.");
         });
       });
